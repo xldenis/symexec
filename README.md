@@ -1,0 +1,1 @@
+A toy symbolic execution engine. Purely exploratory to better understand the tradeoffs that occur when writing a symbolic executor in Rust.
