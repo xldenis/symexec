@@ -6,3 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+smtlib = "0.2.0"
+smtlib-lowlevel = "0.2.0"
+chumsky = { version =  "1.0.0-alpha.7", features = ["pratt", "label"]}
+logos = "0.14.0"
