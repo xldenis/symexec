@@ -3,26 +3,28 @@ use std::collections::HashMap;
 type Ptr<T> = Box<T>;
 type Seq<T> = Vec<T>;
 
-type Var = String;
+pub type Var = String;
 
 #[derive(Debug, Clone)]
 pub(crate) enum Expr {
 	Add(Ptr<Expr>, Ptr<Expr>),
 	Var(Var),
-	Leq(Var, Var),
+	Eq(Var, Var),
+	Div(Ptr<Expr>, Ptr<Expr>),
 	Const(i128),
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum Stmt {
-	Assign { var: Var, expr: Expr },
+	Assert { expr: Expr },
+	Assume { expr: Expr },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum Terminator {
-	Call { name: String, args: Seq<Var>, dest: BasicBlock },
-	Goto { dest: BasicBlock },
-	If { var: Var, true_: BasicBlock, false_: BasicBlock },
+	Goto { dest: BasicBlock, args: Vec<Var> },
+	If { var: Var, true_: (BasicBlock, Vec<Var>), false_: (BasicBlock, Vec<Var>) },
+	Return(Var),
 }
 
 #[derive(Debug, Clone)]
@@ -31,19 +33,18 @@ pub(crate) struct BasicBlock(Var);
 /// Basic blocks are structured in SSA with basic block arguments. 
 #[derive(Debug, Clone)]
 pub(crate) struct Block {
-	arguments: Seq<Var>,
-	stmts: Seq<Stmt>,
-	term: Terminator,
+	pub arguments: Seq<Var>,
+	pub stmts: Seq<Stmt>,
+	pub term: Terminator,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Program {
-	blocks: HashMap<Var, Block>,
+	pub blocks: HashMap<Var, Block>,
 }
 
-/// Pure facts
-/// 
-/// A `Term` is a pure, first-order formula used in path conditions and assertions.
+/// Pure FOL terms
+/// This is unneeded?
 #[derive(Debug, Clone)]
 pub(crate) enum Term {
 	Var(Var),
