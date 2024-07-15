@@ -11,3 +11,7 @@ smtlib-lowlevel = "0.2.0"
 chumsky = { version =  "1.0.0-alpha.7", features = ["pratt", "label"]}
 logos = "0.14.0"
 clap =  { version = "4.5.9", features = ["derive"] }
+ariadne = "0.4.1"
+pretty = "0.12.3"
+anyhow = "1.0.86"
+tracing = "0.1.40"

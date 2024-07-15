@@ -1,6 +1,8 @@
+use std::fmt::Display;
+
 use chumsky::{extra::Err, input::ValueInput, prelude::*};
 
-use crate::lang::{BasicBlock, Block, Expr, Stmt, Term, Terminator, Var};
+use crate::lang::{BasicBlock, Block, Expr, Stmt, Terminator, Var};
 
 // // type P<'a, T> = Parser<'a, str, T, Err<Rich<'a, char>>>;
 
@@ -11,7 +13,7 @@ use crate::lang::{BasicBlock, Block, Expr, Stmt, Term, Terminator, Var};
 use logos::Logos;
 
 #[derive(Logos, Clone, Copy, PartialEq)]
-enum Token<'a> {
+pub enum Token<'a> {
     Error,
     #[token("assert")]
     Assert,
@@ -19,6 +21,14 @@ enum Token<'a> {
     Assume,
     #[token("goto")]
     Goto,
+    #[token("return")]
+    Return,
+    #[token("if")]
+    If,
+    #[token("then")]
+    Then,
+    #[token("else")]
+    Else,
     #[token("var")]
     Var,
     #[token("fresh")]
@@ -55,6 +65,38 @@ enum Token<'a> {
     Whitespace,
 }
 
+impl<'a> Display for Token<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Error => write!(f, "error"),
+            Token::Assert => write!(f, "assert"),
+            Token::Assume => write!(f, "assume"),
+            Token::Goto => write!(f, "goto"),
+            Token::Return => write!(f, "return"),
+            Token::If => write!(f, "if"),
+            Token::Then => write!(f, "then"),
+            Token::Else => write!(f, "else"),
+            Token::Var => write!(f, "var"),
+            Token::Fresh => write!(f, "fresh"),
+            Token::Add => write!(f, "+"),
+            Token::Sub => write!(f, "-"),
+            Token::Mul => write!(f, "*"),
+            Token::Div => write!(f, "/"),
+            Token::EqEq => write!(f, "=="),
+            Token::Eq => write!(f, "="),
+            Token::Comma => write!(f, ","),
+            Token::Semi => write!(f, ";"),
+            Token::LBrace => write!(f, "{{"),
+            Token::RBrace => write!(f, "}}"),
+            Token::LParen => write!(f, "("),
+            Token::RParen => write!(f, ")"),
+            Token::Ident(i) => write!(f, "{i}"),
+            Token::Numeric(n) => write!(f, "{n}"),
+            Token::Whitespace => write!(f, " "),
+        }
+    }
+}
+
 fn expr<'a, I>() -> impl Parser<'a, I, Expr, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
@@ -64,15 +106,18 @@ where
     recursive(|expr| {
         let atom = select! {
           Token::Ident(s) => Expr::Var(s.to_string()),
+          Token::Numeric(n) => Expr::Const(n.parse().unwrap()),
+          Token::Fresh => Expr::Fresh,
         };
 
         let leaf_expr = atom.or(expr.delimited_by(just(Token::LParen), just(Token::RParen)));
 
         leaf_expr.pratt((
-            infix(left(1), just(Token::Mul), Expr::div),
-            infix(left(1), just(Token::Div), Expr::div),
-            infix(left(0), just(Token::Add), Expr::div),
-            infix(left(0), just(Token::Sub), Expr::div),
+            infix(left(10), just(Token::Mul), Expr::mul),
+            infix(left(10), just(Token::Div), Expr::div),
+            infix(left(9), just(Token::Add), Expr::add),
+            infix(left(9), just(Token::Sub), Expr::sub),
+            infix(left(0), just(Token::Eq), Expr::eq),
         ))
     })
     .boxed()
@@ -91,35 +136,39 @@ fn stmt<'a, I>() -> impl Parser<'a, I, Stmt, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    choice((
-        just(Token::Assume)
-            .ignore_then(expr().delimited_by(just(Token::LParen), just(Token::RParen)))
-            .map(|expr| Stmt::Assume { expr }),
-        just(Token::Assert)
-            .ignore_then(expr().delimited_by(just(Token::LParen), just(Token::RParen)))
-            .map(|expr| Stmt::Assert { expr }),
-        just(Token::Var)
-            .ignore_then(ident())
-            .then_ignore(just(Token::Eq))
-            .then(expr())
-            .map(|(nm, e)| Stmt::Assign { var: nm, expr: e }),
-    ))
+    let assume = just(Token::Assume)
+        .ignore_then(expr().delimited_by(just(Token::LParen), just(Token::RParen)))
+        .map(|expr| Stmt::Assume { expr });
+    let assert = just(Token::Assert)
+        .ignore_then(expr().delimited_by(just(Token::LParen), just(Token::RParen)))
+        .map(|expr| Stmt::Assert { expr });
+    let assign = ident()
+        .then_ignore(just(Token::Eq))
+        .then(expr())
+        .map(|(nm, e)| Stmt::Assign { var: nm, expr: e });
+
+    choice((assume, assert, assign))
 }
 
 fn term<'a, I>() -> impl Parser<'a, I, Terminator, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    choice((just(Token::Goto)
-        .ignore_then(
-            ident().map(BasicBlock).then(
-                ident()
-                    .separated_by(just(Token::Comma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::LParen), just(Token::RParen)),
-            ),
-        )
-        .map(|(dest, args)| Terminator::Goto { dest, args }),))
+    choice((
+        just(Token::Goto)
+            .ignore_then(
+                ident().map(BasicBlock).then(
+                    ident()
+                        .separated_by(just(Token::Comma))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                ),
+            )
+            .map(|(dest, args)| Terminator::Goto { dest, args }),
+        just(Token::Return)
+            .ignore_then(ident())
+            .map(Terminator::Return),
+    ))
 }
 
 fn block<'a, I>() -> impl Parser<'a, I, Block, Err<Rich<'a, Token<'a>>>>
@@ -135,21 +184,23 @@ where
         )
         .then(
             stmt()
-                .separated_by(just(Token::Semi))
+                .then_ignore(just(Token::Semi))
+                .repeated()
                 .collect::<Vec<_>>()
+                .then(term())
                 .delimited_by(just(Token::LBrace), just(Token::RBrace)),
         )
-        .then(term())
-        .map(|(((nm, args), stmts), term)| Block {
+        .map(|((name, args), (stmts, term))| Block {
+            name: BasicBlock(name),
             arguments: args,
             stmts,
             term,
         })
 }
 
-fn prog<'a, I>() -> impl Parser<'a, I, Vec<Block>, Err<Rich<'a, Token<'a>>>>
+pub fn prog<'a, I>() -> impl Parser<'a, I, Vec<Block>, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-  block().repeated().collect()
+    block().repeated().collect()
 }

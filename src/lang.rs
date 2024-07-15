@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use pretty::{DocAllocator, Pretty};
+
 type Ptr<T> = Box<T>;
 type Seq<T> = Vec<T>;
 
@@ -11,6 +13,8 @@ pub(crate) enum Expr {
     BinOp(BinOp, Ptr<Expr>, Ptr<Expr>),
     Const(i128),
     Bool(bool),
+    /// Havoc / Any
+    Fresh,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +56,7 @@ pub(crate) struct Block {
     pub arguments: Seq<Var>,
     pub stmts: Seq<Stmt>,
     pub term: Terminator,
+    pub name: BasicBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -95,5 +100,34 @@ impl Expr {
 impl From<i128> for Expr {
     fn from(value: i128) -> Self {
         Expr::Const(value)
+    }
+}
+
+impl std::fmt::Display for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.pretty(&pretty::Arena::new()).1.render_fmt(80, f)
+    }
+}
+
+impl<'a, D: DocAllocator<'a>> Pretty<'a, D> for &'a Expr {
+    fn pretty(self, alloc: &'a D) -> pretty::DocBuilder<'a, D, ()> {
+        match self {
+            Expr::Var(v) => alloc.text(v),
+            Expr::Const(i) => alloc.text(i.to_string()),
+            Expr::Bool(b) => alloc.text(b.to_string()),
+            Expr::Fresh => alloc.text("fresh"),
+            Expr::BinOp(op, a, b) => {
+                let a = a.pretty(alloc);
+                let b = b.pretty(alloc);
+                let op = match op {
+                    BinOp::Add => "+",
+                    BinOp::Div => "/",
+                    BinOp::Mul => "*",
+                    BinOp::Sub => "-",
+                    BinOp::Eq => "==",
+                };
+                alloc.concat(vec![a, alloc.space(), alloc.text(op), alloc.space(), b])
+            }
+        }
     }
 }

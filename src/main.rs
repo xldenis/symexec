@@ -1,16 +1,23 @@
-use std::{collections::HashMap, path::PathBuf};
-
-use clap::Parser;
-use lang::{BasicBlock, Block, Expr, Stmt, Term, Var};
-use smtlib::{
-    backend::z3_binary::Z3Binary, terms::Dynamic, Backend, Bool, Int, SatResult, Solver, Sort as _,
+use std::{
+    collections::{HashMap, HashSet},
+    fs::read_to_string,
+    path::PathBuf,
 };
+
+use chumsky::{
+    input::{Input as _, Stream},
+    Parser as _,
+};
+use clap::Parser;
+use lang::{BasicBlock, Block, Expr, Stmt, Var};
+use logos::Logos;
+use smtlib::{backend::z3_binary::Z3Binary, Backend, Bool, SatResult, Solver};
 use smtlib_lowlevel::{
     ast::{self, Identifier, QualIdentifier, Sort},
     lexicon::{Numeral, Symbol},
 };
 
-use crate::lang::BinOp;
+use crate::{lang::BinOp, parser::Token};
 
 mod lang;
 mod parser;
@@ -26,12 +33,27 @@ impl State {
         &self.store[v]
     }
 
+    fn write_store(&mut self, v: &Var, e: Expr) {
+        if let Expr::Fresh = e {
+            self.store.insert(v.clone(), Expr::Var(v.clone()));
+        } else {
+            self.store.insert(v.clone(), e);
+        }
+    }
+
     /// Solve an expression using SMT
     /// Factor this out to be held by the engine not the state
     fn assert(&self, expr: Expr) -> bool {
         let mut solver = Solver::new(Z3Binary::new("z3").unwrap()).unwrap();
-        store_to_smt(&self.store, &mut solver).unwrap();
 
+        store_to_smt(&self.store, &mut solver).unwrap();
+        self.path.iter().for_each(|e| {
+            solver.assert(expr_to_term(e).unwrap().into()).unwrap();
+        });
+
+        eprintln!("Asserting {expr}");
+
+        solver.assert(expr_to_term(&expr).unwrap().into()).unwrap();
         matches!(solver.check_sat().unwrap(), SatResult::Sat)
     }
 }
@@ -51,40 +73,45 @@ fn store_to_smt<B: Backend>(
     for (v, e) in store {
         solver.run_command(&ast::Command::DeclareConst(
             Symbol(v.clone()),
-            Sort::parse("bool").unwrap(),
+            Sort::parse("Int").unwrap(),
         ))?;
-        solver.assert(expr_to_term(e).into())?;
+
+        if let Some(term) = expr_to_term(&e.clone().eq(Expr::Var(v.clone()))) {
+            solver.assert(term.into())?;
+        }
     }
     Ok(())
 }
 
-fn expr_to_term(expr: &Expr) -> smtlib_lowlevel::ast::Term {
+fn expr_to_term(expr: &Expr) -> Option<smtlib_lowlevel::ast::Term> {
     use smtlib_lowlevel::ast::{SpecConstant, Term};
-    match expr {
+    let e = match expr {
         Expr::BinOp(BinOp::Add, a, b) => Term::Application(
             qual_ident("+".into(), None),
-            vec![expr_to_term(a), expr_to_term(b)],
+            vec![expr_to_term(a)?, expr_to_term(b)?],
         ),
-        Expr::Var(v) => Dynamic::from_name(v).into(),
+        Expr::Var(v) => Term::parse(v).unwrap(),
         Expr::BinOp(BinOp::Eq, a, b) => Term::Application(
             qual_ident("=".into(), None),
-            vec![expr_to_term(a), expr_to_term(b)],
+            vec![expr_to_term(a)?, expr_to_term(b)?],
         ),
         Expr::BinOp(BinOp::Div, a, b) => Term::Application(
-            qual_ident("/".into(), None),
-            vec![expr_to_term(a), expr_to_term(b)],
+            qual_ident("div".into(), None),
+            vec![expr_to_term(a)?, expr_to_term(b)?],
         ),
         Expr::BinOp(BinOp::Sub, a, b) => Term::Application(
             qual_ident("-".into(), None),
-            vec![expr_to_term(a), expr_to_term(b)],
+            vec![expr_to_term(a)?, expr_to_term(b)?],
         ),
         Expr::BinOp(BinOp::Mul, a, b) => Term::Application(
             qual_ident("*".into(), None),
-            vec![expr_to_term(a), expr_to_term(b)],
+            vec![expr_to_term(a)?, expr_to_term(b)?],
         ),
         Expr::Const(i) => Term::SpecConstant(SpecConstant::Numeral(Numeral(format!("{i}")))),
         Expr::Bool(b) => Bool::from(*b).into(),
-    }
+        Expr::Fresh => return None,
+    };
+    Some(e)
 }
 
 type SymExec<T> = Result<Vec<T>, Err>;
@@ -125,7 +152,7 @@ fn eval_block(
             )])
         }
         lang::Terminator::If { var, true_, false_ } => todo!(),
-        lang::Terminator::Return(_) => todo!(),
+        lang::Terminator::Return(_) => Ok(vec![]),
     }
 }
 
@@ -138,27 +165,29 @@ macro_rules! fail {
 fn eval_stmt(b: &Stmt, mut state: State) -> Result<Option<State>, Err> {
     match b {
         Stmt::Assert { expr } => {
+            eprintln!("eval assert");
             let e = eval_expr(expr, &state)?;
             if state.assert(e) {
-                return Ok(Some(state));
+                Ok(Some(state))
             } else {
                 fail!("assert failed")
             }
         }
         Stmt::Assume { expr } => {
+            eprintln!("assuming {expr}");
             let e = eval_expr(expr, &state)?;
             if state.assert(e.clone()) {
                 state.path.push(e);
-                return Ok(Some(state));
+                Ok(Some(state))
             } else {
                 Ok(None)
             }
         }
         Stmt::Assign { var, expr } => {
+            eprintln!("eval assign");
             let expr = eval_expr(expr, &state)?;
-            if let Some(expr) = state.store.insert(var.clone(), expr) {
-                fail!("{var} already assigned {expr:?}");
-            }
+            state.write_store(var, expr);
+
             Ok(Some(state))
         }
     }
@@ -206,13 +235,11 @@ fn eval_expr(e: &Expr, state: &State) -> Result<Expr, Err> {
 
             Ok(e)
         }
+        Expr::Fresh => Ok(Expr::Fresh),
         Expr::Const(_) => Ok(e.clone()),
         Expr::Bool(_) => Ok(e.clone()),
     }
 }
-
-
-
 
 #[derive(clap::Parser)]
 struct Options {
@@ -220,7 +247,71 @@ struct Options {
     path: PathBuf,
 }
 
-fn main() {
-    let opts = Options::parse();
-    println!("Hello, world!");
+fn main() -> std::io::Result<()> {
+    let opts = <Options as clap::Parser>::parse();
+    let file = read_to_string(opts.path)?;
+    let tokens = Token::lexer(&file).spanned().map(|(tok, span)| match tok {
+        Ok(tok) => (tok, span.into()),
+        Err(()) => (Token::Error, span.into()),
+    });
+
+    let stream = Stream::from_iter(tokens).spanned((file.len()..file.len()).into());
+    let parse = parser::prog().parse(stream);
+
+    let result = match parse.into_result() {
+        Ok(re) => re,
+        Err(errs) => {
+            use ariadne::{Color, Label, Report, ReportKind, Source};
+            for err in errs {
+                Report::build(ReportKind::Error, (), err.span().start)
+                    .with_code(3)
+                    .with_message(err.to_string())
+                    .with_label(
+                        Label::new(err.span().into_range())
+                            .with_message(err.reason().to_string())
+                            .with_color(Color::Red),
+                    )
+                    .finish()
+                    .eprint(Source::from(&file))
+                    .unwrap();
+            }
+            return Ok(());
+        }
+    };
+
+    let first_name = result[0].name.clone();
+    let prog = result
+        .into_iter()
+        .map(|b| (b.name.clone(), b))
+        .collect::<HashMap<_, _>>();
+
+    let state = State {
+        path: Default::default(),
+        store: Default::default(),
+    };
+
+    println!("evaluating program");
+    let mut states = vec![(first_name, state)];
+    let mut visited = HashSet::new();
+    while let Some(s) = states.pop() {
+        if !visited.insert(s.0.clone()) {
+            panic!("loop detected. setup `anyhow` crate for prettier messages");
+        }
+        eprintln!("eval block ");
+
+        let res = eval_block(&prog, &prog[&s.0], s.1);
+        match res {
+            Err(e) => {
+                eprintln!("error: {}", e.msg);
+                break;
+            }
+            Ok(s) => {
+                states.extend(s);
+            }
+        }
+    }
+
+    // opts.path
+    println!("Done!");
+    Ok(())
 }
