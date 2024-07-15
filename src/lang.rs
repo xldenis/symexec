@@ -44,7 +44,7 @@ pub(crate) enum Terminator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BasicBlock(Var);
+pub(crate) struct BasicBlock(pub(crate) Var);
 
 /// Basic blocks are structured in SSA with basic block arguments.
 #[derive(Debug, Clone)]

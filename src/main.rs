@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
+use clap::Parser;
 use lang::{BasicBlock, Block, Expr, Stmt, Term, Var};
 use smtlib::{
     backend::z3_binary::Z3Binary, terms::Dynamic, Backend, Bool, Int, SatResult, Solver, Sort as _,
@@ -210,6 +211,16 @@ fn eval_expr(e: &Expr, state: &State) -> Result<Expr, Err> {
     }
 }
 
+
+
+
+#[derive(clap::Parser)]
+struct Options {
+    #[arg(value_name = "FILE")]
+    path: PathBuf,
+}
+
 fn main() {
+    let opts = Options::parse();
     println!("Hello, world!");
 }
