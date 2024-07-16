@@ -13,5 +13,10 @@ logos = "0.14.0"
 clap =  { version = "4.5.9", features = ["derive"] }
 ariadne = "0.4.1"
 pretty = "0.12.3"
-anyhow = "1.0.86"
 tracing = "0.1.40"
+eyre = "0.6.12"
+color-eyre = "0.6.3"
+tracing-subscriber ={  version = "0.3.18", features = ["env-filter"] }
+tracing-error = "0.2.0"
+tryvial = "0.2.0"
+indexmap = "2.2.6"

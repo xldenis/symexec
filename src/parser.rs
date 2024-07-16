@@ -1,8 +1,12 @@
 use std::fmt::Display;
 
-use chumsky::{extra::Err, input::ValueInput, prelude::*};
+use chumsky::{
+    extra::Err,
+    input::{MapExtra, ValueInput},
+    prelude::*,
+};
 
-use crate::lang::{BasicBlock, Block, Expr, Stmt, Terminator, Var};
+use crate::lang::{BasicBlock, Block, Expr, ExprKind, Program, Stmt, Terminator, Var};
 
 // // type P<'a, T> = Parser<'a, str, T, Err<Rich<'a, char>>>;
 
@@ -45,6 +49,8 @@ pub enum Token<'a> {
     EqEq,
     #[token("=")]
     Eq,
+    #[token("<")]
+    Lt,
     #[token(",")]
     Comma,
     #[token(";")]
@@ -93,6 +99,7 @@ impl<'a> Display for Token<'a> {
             Token::Ident(i) => write!(f, "{i}"),
             Token::Numeric(n) => write!(f, "{n}"),
             Token::Whitespace => write!(f, " "),
+            Token::Lt => write!(f, "<"),
         }
     }
 }
@@ -105,22 +112,42 @@ where
 
     recursive(|expr| {
         let atom = select! {
-          Token::Ident(s) => Expr::Var(s.to_string()),
-          Token::Numeric(n) => Expr::Const(n.parse().unwrap()),
-          Token::Fresh => Expr::Fresh,
+          Token::Ident(s) = e  => Expr { span: e.span() , kind: ExprKind::Var(s.to_string()) },
+          Token::Numeric(n) = e => Expr { span: e.span(), kind: ExprKind::Const(n.parse().unwrap()) }
+          ,
+          Token::Fresh = e => Expr { span: e.span(), kind: ExprKind::Fresh } ,
         };
 
         let leaf_expr = atom.or(expr.delimited_by(just(Token::LParen), just(Token::RParen)));
 
         leaf_expr.pratt((
-            infix(left(10), just(Token::Mul), Expr::mul),
-            infix(left(10), just(Token::Div), Expr::div),
-            infix(left(9), just(Token::Add), Expr::add),
-            infix(left(9), just(Token::Sub), Expr::sub),
-            infix(left(0), just(Token::Eq), Expr::eq),
+            infix(left(10), just(Token::Mul), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::mul(l, r),
+            }),
+            infix(left(10), just(Token::Div), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::div(l, r),
+            }),
+            infix(left(9), just(Token::Add), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::add(l, r),
+            }),
+            infix(left(9), just(Token::Sub), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::sub(l, r),
+            }),
+            infix(left(0), just(Token::Eq), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::eq(l, r),
+            }),
+            infix(left(0), just(Token::Lt), |l, _, r, e : &mut MapExtra<'a, '_, _, _>| Expr {
+                span: e.span(),
+                kind: ExprKind::lt(l, r),
+            }),
         ))
     })
-    .boxed()
+    .boxed().labelled("expression")
 }
 
 fn ident<'a, I>() -> impl Parser<'a, I, Var, Err<Rich<'a, Token<'a>>>>
@@ -130,6 +157,7 @@ where
     select! {
       Token::Ident(s) => s.to_string()
     }
+    .labelled("identifier")
 }
 
 fn stmt<'a, I>() -> impl Parser<'a, I, Stmt, Err<Rich<'a, Token<'a>>>>
@@ -147,28 +175,49 @@ where
         .then(expr())
         .map(|(nm, e)| Stmt::Assign { var: nm, expr: e });
 
-    choice((assume, assert, assign))
+    assume.or(assert).or(assign).labelled("statement")
+}
+
+fn block_call<'a, I>() -> impl Parser<'a, I, (BasicBlock, Vec<Var>), Err<Rich<'a, Token<'a>>>>
+where
+    I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
+{
+        ident()
+        .map(BasicBlock)
+        .then(
+            ident()
+                .separated_by(just(Token::Comma))
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::LParen), just(Token::RParen)),
+        )
+        .labelled("block call")
+
 }
 
 fn term<'a, I>() -> impl Parser<'a, I, Terminator, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    choice((
-        just(Token::Goto)
-            .ignore_then(
-                ident().map(BasicBlock).then(
-                    ident()
-                        .separated_by(just(Token::Comma))
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                ),
-            )
-            .map(|(dest, args)| Terminator::Goto { dest, args }),
-        just(Token::Return)
-            .ignore_then(ident())
-            .map(Terminator::Return),
-    ))
+
+    let goto = just(Token::Goto)
+        .ignore_then(block_call())
+        .map(|(dest, args)| Terminator::Goto { dest, args })
+        .labelled("goto");
+
+    let return_ = just(Token::Return)
+        .ignore_then(ident())
+        .map(Terminator::Return)
+        .labelled("return");
+
+    let if_ = just(Token::If)
+        .ignore_then(ident())
+        .then_ignore(just(Token::Then))
+        .then(block_call())
+        .then_ignore(just(Token::Else))
+        .then(block_call())
+        .map(|((i, t), e)|  Terminator::If { var: i, true_: t, false_: e});
+
+    goto.or(return_).or(if_).labelled("terminator")
 }
 
 fn block<'a, I>() -> impl Parser<'a, I, Block, Err<Rich<'a, Token<'a>>>>
@@ -196,11 +245,18 @@ where
             stmts,
             term,
         })
+        .labelled("block")
 }
 
-pub fn prog<'a, I>() -> impl Parser<'a, I, Vec<Block>, Err<Rich<'a, Token<'a>>>>
+pub fn prog<'a, I>() -> impl Parser<'a, I, Program, Err<Rich<'a, Token<'a>>>>
 where
     I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>,
 {
-    block().repeated().collect()
+    block()
+        .map(|b: Block| (b.name.clone(), b))
+        .repeated()
+        .collect::<Vec<_>>()
+        .map(|blocks| Program {
+            blocks: blocks.into_iter().collect(),
+        })
 }
